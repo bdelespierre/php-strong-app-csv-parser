@@ -1,0 +1,226 @@
+#!/usr/bin/env php
+<?php
+
+//    _____ __
+//   / ___// /__________  ____  ____ _
+//   \__ \/ __/ ___/ __ \/ __ \/ __ `/
+//  ___/ / /_/ /  / /_/ / / / / /_/ /
+// /____/\__/_/   \____/_/ /_/\__, /
+//                           /____/
+
+$usage = <<< EOF
+Usage: strong_csv_converter [options] file
+
+where options include:
+    -h,--help     show usage
+    -o,--output   either csv, json, or table
+    -s,--summary  only exercices summary
+    --only-total  only the total volume
+
+EOF;
+
+// ----------------------------------------------------------------------------
+// ARGUMENTS PARSING
+// ----------------------------------------------------------------------------
+
+$opts = getopt('ho:s', ['help', 'output:', 'summary', 'only-total'], $optind);
+$args = array_slice($argv, $optind);
+
+if (isset($opts['h']) || isset($opts['help'])) {
+    fwrite(STDOUT, $usage);
+    exit(0);
+}
+
+if (empty($args)) {
+    fwrite(STDERR, 'No file provided');
+    exit(1);
+}
+
+if (false === $handle = fopen($args[0], 'r')) {
+    fwrite(STDERR, "Unable to open {$argv[1]}");
+    exit(2);
+}
+
+// ----------------------------------------------------------------------------
+// CSV PARSING
+// ----------------------------------------------------------------------------
+
+$headers = fgetcsv($handle, 0, ";", '"');
+$workouts = [];
+
+while (false !== $line = fgetcsv($handle, 0, ";", '"')) {
+    list(
+        $date,
+        $workout_name,
+        $exercise_name,
+        $set_order,
+        $kg,
+        $reps,
+        $km,
+        $seconds
+    ) = $line;
+
+    $time = strtotime($date);
+    $date = date('Y-m-d', $time);
+    $key = "{$date}:{$workout_name}";
+
+    if (empty($workouts[$key])) {
+        $workouts[$key] = [
+            'date' => $date,
+            'name' => $workout_name,
+            'exercises' => [],
+        ];
+    }
+
+    if (empty($workouts[$key]['exercises'][$exercise_name])) {
+        $workouts[$key]['exercises'][$exercise_name] = [
+            'name' => $exercise_name,
+            'sets' => [],
+        ];
+    }
+
+    $workouts[$key]['exercises'][$exercise_name]['sets'][] = [
+        'order' => intval($set_order),
+        'kg' => floatval($kg),
+        'reps' => intval($reps),
+        'km' => floatval($km),
+        'seconds' => intval($seconds),
+    ];
+}
+
+foreach ($workouts as &$workout) {
+    $workout['volume'] = 0;
+    foreach ($workout['exercises'] as &$exercise) {
+        $workout['volume'] += $exercise['volume'] = array_reduce(
+            $exercise['sets'],
+            function ($carry, $item) {
+                return $carry + $item['kg'] * $item['reps'];
+            },
+            0
+        );
+    }
+}
+
+// ----------------------------------------------------------------------------
+// OUTPUT
+// ----------------------------------------------------------------------------
+
+// determines which output function is to be used
+$out = "out_" . ($opts['o'] ?? $opts['output'] ?? 'csv');
+
+if (!function_exists($out)) {
+    fwrite(STDERR, "Invalid output");
+    exit(3);
+}
+
+switch (true) {
+    case (isset($opts['only-total'])):
+        $out(['total'], ['result' => [
+            'total' => array_reduce(
+                $workouts,
+                function ($carry, $item) {
+                    return $carry + $item['volume'];
+                },
+                0
+            )]
+        ]);
+        break;
+
+    case (isset($opts['s']) || isset($opts['summary'])):
+        $data = array_reduce($workouts, function ($carry, $item) {
+            foreach ($item['exercises'] as $name => $exercise) {
+                if (!isset($carry[$name])) {
+                    $carry[$name] = [
+                        'name' => $name,
+                        'count' => 0,
+                        'volume' => 0,
+                    ];
+                }
+
+                $carry[$name]['count'] += count($exercise['sets']);
+                $carry[$name]['volume'] += $exercise['volume'];
+            }
+
+            return $carry;
+        }, []);
+
+        uasort($data, function ($left, $right) {
+            return $right['count'] <=> $left['count'];
+        });
+
+        $out(['name', 'count', 'volume'], $data);
+        break;
+
+    default:
+        $out(['date', 'name', 'volume'], $workouts);
+        break;
+}
+
+// ----------------------------------------------------------------------------
+// FUNCTIONS
+// ----------------------------------------------------------------------------
+
+function out_json(array $cols, array $data)
+{
+    fwrite(STDOUT, json_encode($data, JSON_PRETTY_PRINT));
+}
+
+function out_csv(array $cols, array $data)
+{
+    $empty = array_combine($cols, array_fill(0, count($cols), null));
+
+    fputcsv(STDOUT, array_map('ucfirst', $cols), ';');
+    foreach ($data as $row) {
+        $padded_row = array_intersect_key((array) $row, $empty) + $empty;
+        fputcsv(STDOUT, $padded_row, ';');
+    }
+}
+
+function out_table(array $cols, array $data)
+{
+    $empty = array_combine($cols, array_fill(0, count($cols), null));
+    $largest = $empty;
+
+    foreach ($cols as $col) {
+        foreach ($data as $row) {
+            $largest[$col] = max(
+                $largest[$col],
+                strlen($row[$col]),
+                strlen($col)
+            );
+        }
+    }
+
+    fwrite(STDOUT, $separator = '+' . implode('+', array_map(
+        function ($item) use ($largest) {
+            return str_repeat('-', $largest[$item] + 2);
+        },
+        $cols
+    )) . '+' . PHP_EOL);
+
+    fwrite(STDOUT, '| ' . implode(' | ', array_map(
+        function ($item) use ($largest) {
+            return str_pad(ucfirst($item), $largest[$item]);
+        },
+        $cols
+    )) . ' |' . PHP_EOL);
+
+    fwrite(STDOUT, $separator);
+
+    foreach ($data as $row) {
+        foreach ($cols as $col) {
+            $padded_row[$col] = str_pad($row[$col] ?? '', $largest[$col]);
+        }
+
+
+        fwrite(STDOUT, '| ' . implode(' | ', $padded_row) . ' |' . PHP_EOL);
+    }
+
+    fwrite(STDOUT, $separator);
+}
+
+function dd(...$args)
+{
+    var_dump($args);
+    die();
+}
