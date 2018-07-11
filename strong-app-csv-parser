@@ -54,10 +54,14 @@ while (false !== $line = fgetcsv($handle, 0, ";", '"')) {
         $workout_name,
         $exercise_name,
         $set_order,
-        $kg,
+        $weight,
+        $weight_unit,
         $reps,
-        $km,
-        $seconds
+        $distance,
+        $distance_unit,
+        $seconds,
+        $notes,
+        $workout_notes,
     ) = $line;
 
     $time = strtotime($date);
@@ -81,9 +85,9 @@ while (false !== $line = fgetcsv($handle, 0, ";", '"')) {
 
     $workouts[$key]['exercises'][$exercise_name]['sets'][] = [
         'order' => intval($set_order),
-        'kg' => floatval($kg),
+        'kg' => floatval($weight),
         'reps' => intval($reps),
-        'km' => floatval($km),
+        'km' => floatval($distance),
         'seconds' => intval($seconds),
     ];
 }
